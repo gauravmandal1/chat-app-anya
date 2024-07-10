@@ -9,7 +9,7 @@ const SocketContextProvider = ({ children }) => {
     const [socket, setSocket] = useState(null);
 
     useEffect(() => {
-        const socketInstance = socketIO.connect('http://localhost:8080');
+        const socketInstance = socketIO.connect(`${process.env.REACT_APP_API_URL}`);
 
         socketInstance.on('connect', () => {
             console.log('Socket connected');

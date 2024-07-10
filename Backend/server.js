@@ -3,66 +3,103 @@ import http from 'http';
 import { Server as SocketServer } from 'socket.io';
 import cors from 'cors';
 import mongoose from 'mongoose';
+import dotenv from 'dotenv';
+import bcrypt from 'bcrypt';
+import jwt from 'jsonwebtoken';
+
+dotenv.config();
 
 const app = express();
 const server = http.createServer(app);
 const io = new SocketServer(server, {
     cors: {
-        origin: 'http://localhost:5173',
+        origin: process.env.CLIENT_URL || 'http://localhost:5173',
         methods: ['GET', 'POST'],
         allowedHeaders: ['Content-Type'],
         credentials: true,
     }
 });
 
-
 app.use(cors());
 app.use(express.json());
 
+// MongoDB connection with retry logic
+const connectWithRetry = () => {
+    mongoose.connect(process.env.MONGODB_URI, {
+        useNewUrlParser: true,
+        useUnifiedTopology: true,
+    })
+    .then(() => console.log('Connected to MongoDB'))
+    .catch((err) => {
+        console.error('MongoDB connection error:', err);
+        setTimeout(connectWithRetry, 5000); // Retry connection after 5 seconds
+    });
+};
 
-mongoose.connect('mongodb+srv://runtimeTerror:u9LUu5WhKwiDY3xR@cluster0.ngoqydw.mongodb.net/chatApp');
+connectWithRetry();
 
 const db = mongoose.connection;
 db.on('error', console.error.bind(console, 'MongoDB connection error:'));
-db.once('open', () => console.log('Connected to MongoDB'));
 
 const userSchema = new mongoose.Schema({
-    username: String,
-    password: String,
+    username: { type: String, required: true, unique: true },
+    password: { type: String, required: true },
     messages: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Message' }],
 });
 
 const messageSchema = new mongoose.Schema({
     user: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-    content: String,
+    content: { type: String, required: true },
     timestamp: { type: Date, default: Date.now },
 });
 
 const User = mongoose.model('User', userSchema);
 const Message = mongoose.model('Message', messageSchema);
 
+// Middleware for authenticating JWT tokens
+const authenticateToken = (req, res, next) => {
+    const token = req.headers['authorization'];
+    if (!token) return res.sendStatus(401);
+
+    jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+        if (err) return res.sendStatus(403);
+        req.user = user;
+        next();
+    });
+};
+
+// Secure login endpoint with bcrypt and JWT
 app.post('/login', async (req, res) => {
     const { username, password } = req.body;
 
-    const user = await User.findOne({ username, password }).populate('messages');
+    const user = await User.findOne({ username }).populate('messages');
+    if (!user) return res.status(401).json({ message: 'Invalid credentials' });
 
-    if (user) {
-        res.status(200).json({ message: 'Login successful', user });
-    } else {
-        res.status(401).json({ message: 'Invalid credentials' });
-    }
+    const isValidPassword = await bcrypt.compare(password, user.password);
+    if (!isValidPassword) return res.status(401).json({ message: 'Invalid credentials' });
+
+    const token = jwt.sign({ id: user._id, username: user.username }, process.env.JWT_SECRET, { expiresIn: '1h' });
+
+    res.status(200).json({ message: 'Login successful', token, user });
 });
 
+// Secure signup endpoint with bcrypt
 app.post('/signup', async (req, res) => {
     const { username, password } = req.body;
 
-    const newUser = new User({ username, password });
-    await newUser.save();
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const newUser = new User({ username, password: hashedPassword });
 
-    res.status(201).json({ message: 'Signup successful', user: newUser });
+    try {
+        await newUser.save();
+        res.status(201).json({ message: 'Signup successful', user: newUser });
+    } catch (err) {
+        res.status(400).json({ message: 'Error creating user', error: err.message });
+    }
 });
 
-app.get('/messages/:userId', async (req, res) => {
+// Retrieve messages with authentication
+app.get('/messages/:userId', authenticateToken, async (req, res) => {
     const { userId } = req.params;
 
     try {
@@ -100,5 +137,16 @@ io.on('connection', (socket) => {
     socket.on('disconnect', () => console.log('User disconnected'));
 });
 
+// Handle uncaught exceptions and unhandled rejections
+process.on('uncaughtException', (err) => {
+    console.error('Uncaught Exception:', err);
+    process.exit(1);
+});
 
-server.listen(8080, () => console.log(`Server running on port ${8080}`));
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+    process.exit(1);
+});
+
+const PORT = process.env.PORT || 8080;
+server.listen(PORT, () => console.log(`Server running on port ${PORT}`));

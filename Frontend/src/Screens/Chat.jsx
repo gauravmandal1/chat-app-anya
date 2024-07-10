@@ -14,7 +14,7 @@ function Chat() {
         const fetchMessages = async () => {
             try {
                 const userId = localStorage.getItem('userId');
-                const response = await axios.get(`http://localhost:8080/messages/${userId}`);
+                const response = await axios.get(`${process.env.REACT_APP_API_URL}//messages/${userId}`);
                 const fetchedMessages = response.data.messages.map(msg => ({
                     ...msg,
                     type: 'client' // Marking messages fetched from server initially as client messages
